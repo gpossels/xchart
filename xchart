@@ -1,0 +1,293 @@
+/**
+ * Statistical Process Control (SPC) Chart Calculation with Rules
+ * 
+ * This script calculates SPC chart values and applies rules as described:
+ * - Baseline after 8 data points
+ * - Rule 1: DP outside control limits AND MR > MRUCL
+ * - Rule 2: All last 8 DPs above or below DPA
+ * - Rule 3: At least 3 of last 4 DPs above DUA or below DLA
+ */
+function calculateSPC() {
+  // Get the active spreadsheet and the active sheet
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getActiveSheet();
+  
+  // First, establish baseline if we have at least 8 data points
+  calculateBaseline(sheet);
+  
+  // Next, process all subsequent rows
+  processRules(sheet);
+  
+  Logger.log("SPC calculation completed successfully.");
+}
+
+/**
+ * Calculates the baseline using the first 8 data points
+ */
+function calculateBaseline(sheet) {
+  // Check if we have at least 8 data points (rows 2-9)
+  const dataRange = sheet.getRange("D2:D9");
+  const dataPoints = dataRange.getValues().flat();
+  
+  // Make sure we have 8 data points
+  if (dataPoints.filter(dp => dp !== "").length < 8) {
+    Logger.log("Not enough data points. Need at least 8.");
+    return false;
+  }
+  
+  // 1. Calculate DPA (Data Points Average) for row 9
+  const dpa = dataPoints.reduce((sum, val) => sum + val, 0) / dataPoints.length;
+  sheet.getRange("E9").setValue(dpa);
+  
+  // 2. Calculate MR (Moving Range) for rows 3-9
+  for (let i = 1; i < dataPoints.length; i++) {
+    const mr = Math.abs(dataPoints[i] - dataPoints[i-1]);
+    sheet.getRange(i+2, 6).setValue(mr.toFixed(2)); // Column F is 6th column
+  }
+  
+  // 3. Calculate MRA (Moving Range Average) for row 9
+  const mrRange = sheet.getRange("F3:F9");
+  const mrValues = mrRange.getValues().flat();
+  const mra = mrValues.reduce((sum, val) => sum + val, 0) / mrValues.length;
+  sheet.getRange("G9").setValue(mra.toFixed(2));
+  
+  // 4. Calculate control limits
+  const lcl = dpa - (mra * 3/1.128);
+  const ucl = dpa + (mra * 3/1.128);
+  const mrucl = mra * 3.27;
+  const dla = (lcl + dpa) / 2;
+  const dua = (dpa + ucl) / 2;
+  
+  // Set the calculated values to row 9
+  sheet.getRange("H9").setValue(lcl.toFixed(2));    // LCL
+  sheet.getRange("I9").setValue(dla.toFixed(2));    // DLA
+  sheet.getRange("J9").setValue(dua.toFixed(2));    // DUA
+  sheet.getRange("K9").setValue(ucl.toFixed(2));    // UCL
+  sheet.getRange("L9").setValue(mrucl.toFixed(2));  // MRUCL
+  
+  // 5. Set "Baseline" in columns M and N at row 9
+  sheet.getRange("M9").setValue("Baseline");
+  sheet.getRange("N9").setValue("Baseline");
+  
+  // 6. Copy values from row 9 back to rows 2-8
+  const valuesToCopy = [
+    sheet.getRange("E9").getValue(), // DPA
+    sheet.getRange("G9").getValue(), // MRA
+    sheet.getRange("H9").getValue(), // LCL
+    sheet.getRange("I9").getValue(), // DLA
+    sheet.getRange("J9").getValue(), // DUA
+    sheet.getRange("K9").getValue(), // UCL
+    sheet.getRange("L9").getValue(), // MRUCL
+    sheet.getRange("N9").getValue()  // Baseline
+  ];
+  
+  // Copy to each row from 2 to 8
+  for (let row = 2; row <= 8; row++) {
+    sheet.getRange(row, 5).setValue(valuesToCopy[0]); // E - DPA
+    sheet.getRange(row, 7).setValue(valuesToCopy[1]); // G - MRA
+    sheet.getRange(row, 8).setValue(valuesToCopy[2]); // H - LCL
+    sheet.getRange(row, 9).setValue(valuesToCopy[3]); // I - DLA
+    sheet.getRange(row, 10).setValue(valuesToCopy[4]); // J - DUA
+    sheet.getRange(row, 11).setValue(valuesToCopy[5]); // K - UCL
+    sheet.getRange(row, 12).setValue(valuesToCopy[6]); // L - MRUCL
+    sheet.getRange(row, 14).setValue(valuesToCopy[7]); // N - Baseline
+  }
+  
+  return true;
+}
+
+/**
+ * Process all rows after the baseline to apply rules
+ */
+function processRules(sheet) {
+  // Find the last row with data
+  const lastRow = sheet.getLastRow();
+  
+  // If we don't have data past row 9, there's nothing to process
+  if (lastRow <= 9) {
+    return;
+  }
+  
+  // Process each row starting from row 10
+  for (let currentRow = 10; currentRow <= lastRow; currentRow++) {
+    // Get the current DP
+    const currentDP = sheet.getRange(currentRow, 4).getValue();
+    const previousDP = sheet.getRange(currentRow - 1, 4).getValue();
+    
+    // Calculate MR for current row
+    const currentMR = Math.abs(currentDP - previousDP);
+    sheet.getRange(currentRow, 6).setValue(currentMR.toFixed(2));
+    
+    // Get control limits from previous row
+    const previousDPA = sheet.getRange(currentRow - 1, 5).getValue();
+    const previousMRA = sheet.getRange(currentRow - 1, 7).getValue();
+    const previousLCL = sheet.getRange(currentRow - 1, 8).getValue();
+    const previousDLA = sheet.getRange(currentRow - 1, 9).getValue();
+    const previousDUA = sheet.getRange(currentRow - 1, 10).getValue();
+    const previousUCL = sheet.getRange(currentRow - 1, 11).getValue();
+    const previousMRUCL = sheet.getRange(currentRow - 1, 12).getValue();
+    
+    // Initialize rule flags
+    let rule1Triggered = false;
+    let rule2Triggered = false;
+    let rule3Triggered = false;
+    
+    // Check Rule 1: DP outside control limits AND MR > MRUCL
+    if ((currentDP > previousUCL || currentDP < previousLCL) && currentMR > previousMRUCL) {
+      rule1Triggered = true;
+      // Register "1" in Signal column
+      sheet.getRange(currentRow, 15).setValue(1);
+    }
+    
+    // Check Rule 2: All 8 recent DPs above or below DPA
+    // Get the last 8 DPs (including current)
+    const lastEightDPsRange = sheet.getRange(currentRow - 7, 4, 8, 1);
+    const lastEightDPs = lastEightDPsRange.getValues().flat();
+    
+    // Check if all 8 DPs are above or all below previous DPA
+    const allAboveDPA = lastEightDPs.every(dp => dp > previousDPA);
+    const allBelowDPA = lastEightDPs.every(dp => dp < previousDPA);
+    
+    if (allAboveDPA || allBelowDPA) {
+      rule2Triggered = true;
+      
+      // Calculate new values based on last 8 DPs
+      // 1. New DPA
+      const newDPA = lastEightDPs.reduce((sum, val) => sum + val, 0) / 8;
+      sheet.getRange(currentRow, 5).setValue(newDPA.toFixed(2));
+      
+      // 2. New MRA
+      const lastEightMRsRange = sheet.getRange(currentRow - 7, 6, 8, 1);
+      const lastEightMRs = lastEightMRsRange.getValues().flat();
+      const newMRA = lastEightMRs.reduce((sum, val) => sum + val, 0) / 8;
+      sheet.getRange(currentRow, 7).setValue(newMRA.toFixed(2));
+      
+      // 3. Calculate new control limits
+      const newLCL = newDPA - (newMRA * 3/1.128);
+      const newUCL = newDPA + (newMRA * 3/1.128);
+      const newMRUCL = newMRA * 3.27;
+      const newDLA = (newLCL + newDPA) / 2;
+      const newDUA = (newDPA + newUCL) / 2;
+      
+      // Set the calculated values
+      sheet.getRange(currentRow, 8).setValue(newLCL.toFixed(2));   // LCL
+      sheet.getRange(currentRow, 9).setValue(newDLA.toFixed(2));   // DLA
+      sheet.getRange(currentRow, 10).setValue(newDUA.toFixed(2));  // DUA
+      sheet.getRange(currentRow, 11).setValue(newUCL.toFixed(2));  // UCL
+      sheet.getRange(currentRow, 12).setValue(newMRUCL.toFixed(2)); // MRUCL
+      
+      // Register "Rule 2" in columns M and N
+      sheet.getRange(currentRow, 13).setValue("Rule 2");
+      sheet.getRange(currentRow, 14).setValue("Rule 2");
+      
+      // Copy values back to the preceding 7 rows
+      const valuesToCopy = [
+        newDPA.toFixed(2),   // DPA
+        newMRA.toFixed(2),   // MRA
+        newLCL.toFixed(2),   // LCL
+        newDLA.toFixed(2),   // DLA
+        newDUA.toFixed(2),   // DUA
+        newUCL.toFixed(2),   // UCL
+        newMRUCL.toFixed(2), // MRUCL
+        "Rule 2"             // Rule Applied
+      ];
+      
+      // Copy to each of the 7 preceding rows
+      for (let row = currentRow - 7; row < currentRow; row++) {
+        sheet.getRange(row, 5).setValue(valuesToCopy[0]);  // E - DPA
+        sheet.getRange(row, 7).setValue(valuesToCopy[1]);  // G - MRA
+        sheet.getRange(row, 8).setValue(valuesToCopy[2]);  // H - LCL
+        sheet.getRange(row, 9).setValue(valuesToCopy[3]);  // I - DLA
+        sheet.getRange(row, 10).setValue(valuesToCopy[4]); // J - DUA
+        sheet.getRange(row, 11).setValue(valuesToCopy[5]); // K - UCL
+        sheet.getRange(row, 12).setValue(valuesToCopy[6]); // L - MRUCL
+        sheet.getRange(row, 14).setValue(valuesToCopy[7]); // N - Rule Applied
+      }
+    } 
+    // Only check Rule 3 if Rule 2 is not triggered
+    else {
+      // Check Rule 3: At least 3 of last 4 DPs above DUA or below DLA
+      const lastFourDPsRange = sheet.getRange(currentRow - 3, 4, 4, 1);
+      const lastFourDPs = lastFourDPsRange.getValues().flat();
+      
+      // Count DPs above DUA and below DLA
+      const aboveDUACount = lastFourDPs.filter(dp => dp > previousDUA).length;
+      const belowDLACount = lastFourDPs.filter(dp => dp < previousDLA).length;
+      
+      if (aboveDUACount >= 3 || belowDLACount >= 3) {
+        rule3Triggered = true;
+        
+        // Calculate new values based on last 4 DPs
+        // 1. New DPA
+        const newDPA = lastFourDPs.reduce((sum, val) => sum + val, 0) / 4;
+        sheet.getRange(currentRow, 5).setValue(newDPA.toFixed(2));
+        
+        // 2. New MRA
+        const lastFourMRsRange = sheet.getRange(currentRow - 3, 6, 4, 1);
+        const lastFourMRs = lastFourMRsRange.getValues().flat();
+        const newMRA = lastFourMRs.reduce((sum, val) => sum + val, 0) / 4;
+        sheet.getRange(currentRow, 7).setValue(newMRA.toFixed(2));
+        
+        // 3. Calculate new control limits
+        const newLCL = newDPA - (newMRA * 3/1.128);
+        const newUCL = newDPA + (newMRA * 3/1.128);
+        const newMRUCL = newMRA * 3.27;
+        const newDLA = (newLCL + newDPA) / 2;
+        const newDUA = (newDPA + newUCL) / 2;
+        
+        // Set the calculated values
+        sheet.getRange(currentRow, 8).setValue(newLCL.toFixed(2));   // LCL
+        sheet.getRange(currentRow, 9).setValue(newDLA.toFixed(2));   // DLA
+        sheet.getRange(currentRow, 10).setValue(newDUA.toFixed(2));  // DUA
+        sheet.getRange(currentRow, 11).setValue(newUCL.toFixed(2));  // UCL
+        sheet.getRange(currentRow, 12).setValue(newMRUCL.toFixed(2)); // MRUCL
+        
+        // Register "Rule 3" in columns M and N
+        sheet.getRange(currentRow, 13).setValue("Rule 3");
+        sheet.getRange(currentRow, 14).setValue("Rule 3");
+        
+        // Copy values back to the preceding 3 rows
+        const valuesToCopy = [
+          newDPA.toFixed(2),   // DPA
+          newMRA.toFixed(2),   // MRA
+          newLCL.toFixed(2),   // LCL
+          newDLA.toFixed(2),   // DLA
+          newDUA.toFixed(2),   // DUA
+          newUCL.toFixed(2),   // UCL
+          newMRUCL.toFixed(2), // MRUCL
+          "Rule 3"             // Rule Applied
+        ];
+        
+        // Copy to each of the 3 preceding rows
+        for (let row = currentRow - 3; row < currentRow; row++) {
+          sheet.getRange(row, 5).setValue(valuesToCopy[0]);  // E - DPA
+          sheet.getRange(row, 7).setValue(valuesToCopy[1]);  // G - MRA
+          sheet.getRange(row, 8).setValue(valuesToCopy[2]);  // H - LCL
+          sheet.getRange(row, 9).setValue(valuesToCopy[3]);  // I - DLA
+          sheet.getRange(row, 10).setValue(valuesToCopy[4]); // J - DUA
+          sheet.getRange(row, 11).setValue(valuesToCopy[5]); // K - UCL
+          sheet.getRange(row, 12).setValue(valuesToCopy[6]); // L - MRUCL
+          sheet.getRange(row, 14).setValue(valuesToCopy[7]); // N - Rule Applied
+        }
+      } 
+      // If no rules are triggered, copy the previous row's values
+      else {
+        // Copy values from the previous row
+        sheet.getRange(currentRow, 5).setValue(previousDPA);  // DPA
+        sheet.getRange(currentRow, 7).setValue(previousMRA);  // MRA
+        sheet.getRange(currentRow, 8).setValue(previousLCL);  // LCL
+        sheet.getRange(currentRow, 9).setValue(previousDLA);  // DLA
+        sheet.getRange(currentRow, 10).setValue(previousDUA); // DUA
+        sheet.getRange(currentRow, 11).setValue(previousUCL); // UCL
+        sheet.getRange(currentRow, 12).setValue(previousMRUCL); // MRUCL
+        
+        // Copy rule applied from previous row
+        const previousRuleApplied = sheet.getRange(currentRow - 1, 14).getValue();
+        sheet.getRange(currentRow, 14).setValue(previousRuleApplied);
+      }
+    }
+    
+    // Log the results for debugging
+    Logger.log(`Row ${currentRow}: Rule1=${rule1Triggered}, Rule2=${rule2Triggered}, Rule3=${rule3Triggered}`);
+  }
+}
